@@ -9,7 +9,7 @@ def train(epoch, model, data_loader, optimizer, logger, args):
     with tqdm(enumerate(data_loader), total=len(data_loader), leave=False) as progress:
         for batch_idx, (data, target) in progress:
             if args.cuda:
-                data, target = data.cuda(), target.cuda()
+                data, target = data.cuda(async=True), target.cuda(async=True)
             data, target = Variable(data), Variable(target)
             optimizer.zero_grad()
 
@@ -28,7 +28,7 @@ def test(epoch, model, data_loader, logger, args):
     with tqdm(enumerate(data_loader), total=len(data_loader), leave=False) as progress:
         for batch_idx, (data, target) in progress:
             if args.cuda:
-                data, target = data.cuda(), target.cuda()
+                data, target = data.cuda(async=True), target.cuda(async=True)
             data, target = Variable(data, volatile=True), Variable(target)
 
             output = model(data)

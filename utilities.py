@@ -7,6 +7,7 @@ import numpy
 from tensorboard import SummaryWriter
 from collections import defaultdict
 import os
+import datasets
 
 def to_numeric(value):
     if type(value) == torch.autograd.variable.Variable:
@@ -67,28 +68,23 @@ def parse_arguments():
     kwargs = {'num_workers': args.num_workers, 'pin_memory': True} if args.cuda else {}
 
     args.train_loader = torch.utils.data.DataLoader(
-        datasets.MNIST('../data', train=True, download=True,
-                       transform=transforms.Compose([
-                           transforms.ToTensor(),
-                           transforms.Normalize((0.1307,), (0.3081,))
-                       ])),
+        datasets.SceneNetRGBD('/mnt/not_backed_up/scenenetrgbd/val',
+                              '/mnt/not_backed_up/scenenetrgbd/scenenet_rgbd_val.pb'),
         batch_size=args.batch_size, shuffle=True, **kwargs)
 
     args.validation_loader = torch.utils.data.DataLoader(
-        datasets.MNIST('../data', train=False, transform=transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.1307,), (0.3081,))
-        ])),
+        datasets.SceneNetRGBD('/mnt/not_backed_up/scenenetrgbd/val',
+                              '/mnt/not_backed_up/scenenetrgbd/scenenet_rgbd_val.pb'),
         batch_size=args.batch_size, shuffle=True, **kwargs)
 
     args.test_loader = torch.utils.data.DataLoader(
-        datasets.MNIST('../data', train=False, transform=transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.1307,), (0.3081,))
-        ])),
+        datasets.SceneNetRGBD('/mnt/not_backed_up/scenenetrgbd/val',
+                              '/mnt/not_backed_up/scenenetrgbd/scenenet_rgbd_val.pb'),
         batch_size=args.batch_size, shuffle=True, **kwargs)
 
-    args.model = models.Net()
+    args.model = models.Net(args.train_loader.dataset.instance_shapes,
+                            args.validation_loader.dataset.instance_shapes,
+                            args.test_loader.dataset.instance_shapes)
     if args.cuda:
         args.model.cuda()
 
