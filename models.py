@@ -21,4 +21,6 @@ class Net(nn.Module):
 
     def loss(self, output, target):
         loss = F.nll_loss(output, target)
-        return loss, {'loss': loss, 'other_stat': 1.0}
+        pred = output.data.max(1, keepdim=True)[1]
+        accuracy = pred.eq(target.data.view_as(pred)).cpu().sum() / float(len(target))
+        return loss, {'loss': loss, 'accuracy': accuracy * 100}

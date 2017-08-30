@@ -8,6 +8,15 @@ from tensorboard import SummaryWriter
 from collections import defaultdict
 import os
 
+def to_numeric(value):
+    if type(value) == torch.autograd.variable.Variable:
+        value = value.data[0]
+    elif type(value) == int or type(value) == float:
+        value = value
+    else:
+        raise Exception('argument must be of type Variable, float, or int, not "{}"'.format(type(value)))
+    return value
+
 class Logger():
     def __init__(self, root):
         self.writer = SummaryWriter(root)
@@ -17,18 +26,13 @@ class Logger():
         index = index if index is not None else self.last_indexes[key]
         self.last_indexes[key] += 1
 
-        if type(value) == torch.autograd.variable.Variable:
-            value = value.data[0]
-        elif type(value) == int or type(value) == float:
-            value = value
-        else:
-            raise Exception('argument must be of type Variable, float, or int, not "{}"'.format(type(value)))
+        value = to_numeric(value)
 
         self.writer.add_scalar(key, value, index)
 
-    def from_stats(self, key_value_dictionary):
+    def from_stats(self, key_value_dictionary, index=None):
         for key in key_value_dictionary:
-            self.scalar(key, key_value_dictionary[key])
+            self.scalar(key, key_value_dictionary[key], index)
 
 def parse_arguments():
     # Training settings
@@ -94,3 +98,15 @@ def parse_arguments():
     args.test_logger = Logger(os.path.join(args.log_root, 'test'))
 
     return args
+
+def add_stats(dictionaryA, dictionaryB):
+    return {key:   (to_numeric(dictionaryA[key]) if key in dictionaryA else 0)
+                 + (to_numeric(dictionaryB[key]) if key in dictionaryB else 0)
+            for key in list(dictionaryA.keys()) + list(dictionaryB.keys())}
+
+def divide_stats_by_constant(dictionary, constant):
+    return {key: to_numeric(dictionary[key]) / constant for key in dictionary}
+
+
+def stats_to_string(dictionary, prepend=""):
+    return " ".join(["{}{}:{:.4f}".format(prepend, key, to_numeric(dictionary[key])) for key in dictionary])
