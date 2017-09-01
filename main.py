@@ -4,13 +4,16 @@ from tqdm import tqdm
 import utilities
 from collections import defaultdict
 
+
 def train(epoch, model, data_loader, optimizer, logger, args):
     model.train()
     with tqdm(enumerate(data_loader), total=len(data_loader), leave=False) as progress:
-        for batch_idx, (data, target) in progress:
+        for batch_idx, data_target in progress:
             if args.cuda:
-                data, target = data.cuda(async=True), target.cuda(async=True)
-            data, target = Variable(data), Variable(target)
+                data_target = [d.cuda(async=True) for d in data_target]
+            data_target = [Variable(d) for d in data_target]
+            data, target = data_target[:-1], data_target[-1]
+
             optimizer.zero_grad()
 
             output = model(data)
@@ -19,27 +22,32 @@ def train(epoch, model, data_loader, optimizer, logger, args):
             loss.backward()
             optimizer.step()
 
-            logger.from_stats(stats, index=epoch * len(data_loader) + batch_idx)
             progress.set_description(utilities.stats_to_string(stats))
+
+            if batch_idx % args.log_frequency == 0:
+                logger.from_stats(stats, index=epoch * len(data_loader) + batch_idx)
+
 
 def test(epoch, model, data_loader, logger, args):
     model.eval()
     summarized_stats = defaultdict(float)
     with tqdm(enumerate(data_loader), total=len(data_loader), leave=False) as progress:
-        for batch_idx, (data, target) in progress:
+        for batch_idx, data_target in progress:
             if args.cuda:
-                data, target = data.cuda(async=True), target.cuda(async=True)
-            data, target = Variable(data, volatile=True), Variable(target)
+                data_target = [d.cuda(async=True) for d in data_target]
+            data_target = [Variable(d) for d in data_target]
+            data, target = data_target[:-1], data_target[-1]
 
             output = model(data)
             loss, stats = model.loss(output, target)
 
             summarized_stats = utilities.add_stats(summarized_stats, stats)
-            progress.set_description(utilities.stats_to_string(summarized_stats))
+            progress.set_description(utilities.stats_to_string(stats))
 
     summarized_stats = utilities.divide_stats_by_constant(summarized_stats, len(data_loader))
 
     return summarized_stats
+
 
 if __name__ == '__main__':
     args = utilities.parse_arguments()

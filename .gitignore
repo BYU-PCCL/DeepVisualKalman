@@ -3,3 +3,4 @@ data/*
 .log/*
 .idea/*
 __pycache__/*
+*.lprof
