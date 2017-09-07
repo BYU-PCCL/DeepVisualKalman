@@ -18,7 +18,7 @@ def train(epoch, model, data_loader, optimizer, logger, args):
 
             output = model(data)
 
-            loss, stats = model.loss(output, target)
+            loss, stats = model.loss(output, target, data)
             loss.backward()
             optimizer.step()
 
@@ -39,7 +39,7 @@ def test(epoch, model, data_loader, logger, args):
             data, target = data_target[:-1], data_target[-1]
 
             output = model(data)
-            loss, stats = model.loss(output, target)
+            loss, stats = model.loss(output, target, data)
 
             summarized_stats = utilities.add_stats(summarized_stats, stats)
             progress.set_description(utilities.stats_to_string(stats))

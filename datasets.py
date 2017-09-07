@@ -13,8 +13,8 @@ from torch.autograd import Variable
 from collections import defaultdict
 import pyquaternion as pyq
 import matplotlib.pyplot as plt
-
-
+import pykitti
+import itertools
 
 
 def normalize(v):
@@ -67,12 +67,6 @@ def interpolate_poses(start_pose,end_pose,alpha):
     pose.timestamp = timestamp
     return pose
 
-def pose_to_euler(pose):
-    camera = position_to_np_array(pose.camera)
-    lookat = position_to_np_array(pose.lookat)
-
-    return camera - lookat
-
 def trajectory_to_paths(root, traj, view):
     paths = {}
     for type in ['photo', 'depth', 'instance']:
@@ -83,6 +77,16 @@ def trajectory_to_paths(root, traj, view):
 def logq(q):
     n = np.linalg.norm(q.vector)
     return 2 * np.arctan2(n, q.scalar) * q.vector / n
+
+class KITTI(data.Dataset):
+    def __init__(self, data_root):
+        dataset = pykitti.odometry(data_root, '01')
+
+        second_pose = next(iter(itertools.islice(dataset.poses, 1, None)))
+        first_rgb = next(iter(dataset.rgb))
+
+    def __getitem__(self, index):
+        pass
 
 
 class SceneNetRGBD(data.Dataset):
@@ -158,6 +162,7 @@ class SceneNetRGBD(data.Dataset):
 
             ground_truth_pose = interpolate_poses(view.shutter_open, view.shutter_close, 0.5)
 
+            # TODO: this is a slow way of computing the quaternion - we should compute x,y,z,w directly
             T = world_to_camera_with_pose(ground_truth_pose)
             position = T[:3, 3]
             inertial_to_body_quaterion = pyq.Quaternion(matrix=T)
@@ -195,45 +200,57 @@ class SceneNetRGBD(data.Dataset):
             xdd[i] = qs[i].rotate(xdd[i])
 
         # TODO: are you handling error properly yet?
+        xd = np.array(xd, dtype=np.float32)
+        xdd = np.array(xdd, dtype=np.float32)
+        qd = np.array(qd, dtype=np.float32)
+        dt = np.ones(self.sequence_length, dtype=np.float32)
 
-        return frames, np.array(xd), np.array(xdd), np.array(qd), targets[-1].copy(), targets
+        return dt, frames, xd, xdd, qd, targets[-1].copy(), targets
 
     def __len__(self):
         return len(SceneNetRGBD.instances[self.protobuf_glob])
 
 
 if __name__ == '__main__':
-    sequence_length = 100
+    sequence_length = 3
     ds = SceneNetRGBD('/mnt/pccfs/not_backed_up/scenenetrgbd/val',
                       '/mnt/pccfs/not_backed_up/scenenetrgbd/scenenet_rgbd_val.pb',
                       sequence_length)
 
+    for _ in tqdm(ds):
+        pass
+
+    #
+    # print(len(ds))
+    # (frames, xd, xdd, omegas), targets = ds[400]
+    #
+    # print(frames.shape, targets.shape)
+    # print(targets)
+    #
+    # plt.figure(1)
+    # plt.subplot(411)
+    # plt.plot(range(sequence_length), omegas)
+    # plt.legend(['x', 'y', 'z'])
+    # plt.title('omega')
+    #
+    # plt.subplot(412)
+    # plt.plot(range(sequence_length), xd)
+    # plt.legend(['x', 'y', 'z'])
+    # plt.title('vel')
+    #
+    # plt.subplot(413)
+    # plt.plot(range(sequence_length), xdd)
+    # plt.legend(['x', 'y', 'z'])
+    # plt.title('accel')
+    #
+    # print(targets.shape)
+    #
+    # plt.subplot(414)
+    # plt.plot(range(sequence_length), targets[:, 6:])
+    # plt.legend(['w', 'x', 'y', 'z'])
+    # plt.title('quaternion')
+    # plt.show()
+
+
+    ds = KITTI('/mnt/pccfs/not_backed_up/kitti/odometry/dataset')
     print(len(ds))
-    (frames, xd, xdd, omegas), targets = ds[400]
-
-    print(frames.shape, targets.shape)
-    print(targets)
-
-    plt.figure(1)
-    plt.subplot(411)
-    plt.plot(range(sequence_length), omegas)
-    plt.legend(['x', 'y', 'z'])
-    plt.title('omega')
-
-    plt.subplot(412)
-    plt.plot(range(sequence_length), xd)
-    plt.legend(['x', 'y', 'z'])
-    plt.title('vel')
-
-    plt.subplot(413)
-    plt.plot(range(sequence_length), xdd)
-    plt.legend(['x', 'y', 'z'])
-    plt.title('accel')
-
-    print(targets.shape)
-
-    plt.subplot(414)
-    plt.plot(range(sequence_length), targets[:, 6:])
-    plt.legend(['w', 'x', 'y', 'z'])
-    plt.title('quaternion')
-    plt.show()

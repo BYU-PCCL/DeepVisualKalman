@@ -19,13 +19,13 @@ def parse_arguments():
                         help='input batch size for testing (default: 1000)')
     parser.add_argument('--epochs', type=int, default=10, metavar='N',
                         help='number of epochs to train (default: 10)')
-    parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
+    parser.add_argument('--lr', type=float, default=0.001, metavar='LR',
                         help='learning rate (default: 0.01)')
     parser.add_argument('--momentum', type=float, default=0.5, metavar='M',
                         help='SGD momentum (default: 0.5)')
     parser.add_argument('--no-cuda', action='store_true', default=False,
                         help='disables CUDA training')
-    parser.add_argument('--seed', type=int, default=1, metavar='S',
+    parser.add_argument('--seed', type=int, default=42, metavar='S',
                         help='random seed (default: 1)')
     parser.add_argument('--num_workers', type=int, default=12, metavar='NW',
                         help='number of threads (default: 5)')
@@ -73,7 +73,7 @@ def parse_arguments():
     if args.cuda:
         args.model.cuda()
 
-    args.optimizer = optim.SGD(args.model.parameters(), lr=args.lr, momentum=args.momentum)
+    args.optimizer = optim.Adam(args.model.parameters(), lr=args.lr)
 
     args.train_logger = Logger(os.path.join(args.log_root, 'train'))
     args.test_logger = Logger(os.path.join(args.log_root, 'test'))

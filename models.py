@@ -3,7 +3,40 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 import torch
 import numpy as np
+import matplotlib.pyplot as plt
 import pyquaternion as pyq
+
+# Thank's Atila!
+# https://gist.github.com/atilaorh/97c16b796c1d03138ef72bb80d9b97d7
+class SobelGradRepeated2D(nn.Module):
+    def __init__(self, in_channels, in_time):
+        super(SobelGradRepeated2D, self).__init__()
+        assert in_time % 2 != 0, 'in_time should be an odd number to maintain input and output sizes'
+
+        gx_kernel = np.array([[1, 2, 1], [0, 0, 0], [-1, -2, -1]], dtype=np.float32)
+        gy_kernel = gx_kernel.T.copy()
+
+        gx_kernel = np.tile(gx_kernel, [1, in_channels, in_time, 1, 1])  # (out_channels, in_channels, kT, kH, kW)
+        gy_kernel = np.tile(gy_kernel, [1, in_channels, in_time, 1, 1])
+
+        gx_kernel = Variable(torch.from_numpy(gx_kernel), requires_grad=False)
+        gy_kernel = Variable(torch.from_numpy(gy_kernel), requires_grad=False)
+
+        self.register_buffer('gx_kernel', gx_kernel)
+        self.register_buffer('gy_kernel', gy_kernel)
+
+        self.in_time = in_time
+        self.in_channels = in_channels
+
+
+    def forward(self, im):
+        gx = torch.nn.functional.conv3d(im, self.gx_kernel, bias=None, stride=1, padding=(self.in_time // 2, 1, 1))
+        gy = torch.nn.functional.conv3d(im, self.gy_kernel, bias=None, stride=1, padding=(self.in_time // 2, 1, 1))
+
+        grad = torch.sqrt(gx * gx + gy * gy)
+        grad /= 3.
+
+        return grad
 
 # 3D-Unet code from: https://github.com/shiba24/3d-unet/blob/master/pytorch/model.py
 class Net(nn.Module):
@@ -16,14 +49,18 @@ class Net(nn.Module):
         test_input = Variable(torch.ones(1, *(train_shapes[0])))
         sensor_dim = 512
 
-        self.ec0 = self.encoder(channels,  32, kernel_size=(sequence_length, 3, 3), padding=(1, 0, 0), bias=False, batchnorm=True)
-        self.ec1 = self.encoder(      32,  64, kernel_size=(sequence_length, 3, 3), padding=(1, 0, 0), bias=False, batchnorm=True)
-        self.ec2 = self.encoder(      64,  64, kernel_size=(sequence_length, 3, 3), padding=(1, 0, 0), bias=False, batchnorm=True)
-        self.ec3 = self.encoder(      64, 128, kernel_size=(sequence_length, 3, 3), padding=(1, 0, 0), bias=False, batchnorm=True)
-        self.ec4 = self.encoder(     128, 128, kernel_size=(sequence_length, 3, 3), padding=(0, 0, 0), bias=False, batchnorm=True)
-        self.ec5 = self.encoder(     128, 256,               kernel_size=(1, 3, 3), padding=(0, 0, 0), bias=False, batchnorm=True)
-        self.ec6 = self.encoder(     256, 256,               kernel_size=(1, 3, 3), padding=(0, 0, 0), bias=False, batchnorm=True)
-        self.ec7 = self.encoder(     256, sensor_dim,        kernel_size=(1, 3, 3), padding=(0, 0, 0), bias=False, batchnorm=True)
+        self.sobel_gradient = SobelGradRepeated2D(channels, sequence_length)
+
+        hsl = sequence_length // 2  # half sequence length
+
+        self.ec0 = self.encoder(       1,  32, kernel_size=(sequence_length, 3, 3), padding=(hsl, 0, 0), bias=True, batchnorm=False)
+        self.ec1 = self.encoder(      32,  64, kernel_size=(sequence_length, 3, 3), padding=(hsl, 0, 0), bias=True, batchnorm=False)
+        self.ec2 = self.encoder(      64,  64, kernel_size=(sequence_length, 3, 3), padding=(hsl, 0, 0), bias=True, batchnorm=False)
+        self.ec3 = self.encoder(      64, 128, kernel_size=(sequence_length, 3, 3), padding=(hsl, 0, 0), bias=True, batchnorm=False)
+        self.ec4 = self.encoder(     128, 128, kernel_size=(sequence_length, 3, 3), padding=(0, 0, 0),   bias=True, batchnorm=False)
+        self.ec5 = self.encoder(     128, 256,               kernel_size=(1, 3, 3), padding=(0, 0, 0),   bias=True, batchnorm=False)
+        self.ec6 = self.encoder(     256, 256,               kernel_size=(1, 3, 3), padding=(0, 0, 0),   bias=True, batchnorm=False)
+        self.ec7 = self.encoder(     256, sensor_dim,        kernel_size=(1, 3, 3), padding=(0, 0, 0),   bias=True, batchnorm=False)
 
         self.pool0 = nn.MaxPool3d((1, 2, 2))
         self.pool1 = nn.MaxPool3d((1, 2, 2))
@@ -48,17 +85,26 @@ class Net(nn.Module):
             nn.ReLU(),
             nn.Linear(1024, 1024),
             nn.ReLU(),
-            nn.Linear(1024, 4))
+            nn.Linear(1024, 3))
 
-        # sobel texture gradient
         # b-vae
 
-        self.quaterion_unit_inverse_mask = Variable(torch.from_numpy(np.array([1., -1., -1., -1.], dtype=np.float32)),
-                                                    requires_grad=False)
-        if args.cuda:
-            self.quaterion_unit_inverse_mask = self.quaterion_unit_inverse_mask.cuda()
+        self.gravity = Variable(torch.from_numpy(np.array([[0, 0, 1.]], dtype=np.float32))).cuda()
+        self.quaterion_unit_inverse_mask = Variable(torch.from_numpy(np.array([1., -1., -1., -1.], dtype=np.float32)), requires_grad=False).cuda()
 
-        self.reconstruction_loss = nn.MSELoss()
+        self.epsilon = 1e-4
+
+        # symmetric and positive definite, possibly just diagonal
+        self.Q = nn.Parameter(torch.ones(9))
+
+        self.reconstruction_loss = nn.L1Loss()
+
+        self.initialize_weights()
+
+    def initialize_weights(self):
+        for module in self.children():
+            if type(module) == nn.Conv3d:
+                torch.nn.init.xavier_normal(module.weight, gain=1)
 
     def quaterion_unit_inverse(self, q):
         return q * self.quaterion_unit_inverse_mask
@@ -72,16 +118,49 @@ class Net(nn.Module):
                           aw * by + ax * bz + ay * bw - az * bx,
                           aw * bz - ax * by + ay * bx + az * bw], 1)
 
+    def quaternion_rot(self, vector, q):
+        qw, qx, qy, qz = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+        vx, vy, vz = vector[:, 0], vector[:, 1], vector[:, 2]
+
+        return torch.stack(
+            [(1. - 2. * qy * qy - 2. * qz * qz) * vx + (2. * (qx * qy + qw * qz)) * vy + 2. * (qx * qz - qw * qy) * vz,
+             (2. * (qx * qy - qw * qz)) * vx + (1. - 2. * qx * qx - 2. * qz * qz) * vy + 2. * (qy * qz + qw * qx) * vz,
+             (2. * (qx * qz + qw * qy)) * vx + 2. * (qy * qz - qw * qx) * vy + (1. - 2. * qx * qx - 2. * qy * qy) * vz], 1)
+
+    def expq(self, three_vector):
+        # clamping to address https://github.com/pytorch/pytorch/issues/2421
+        three_vector = torch.clamp(three_vector, self.epsilon)
+
+        n = torch.norm(three_vector, p=2, dim=1, keepdim=True)
+        half_norm = n / 2.0
+        q = torch.cat([torch.cos(half_norm), torch.sin(half_norm) * three_vector / n], dim=1)
+
+        # when norm(three_vector) is close to zero it creates a numerical instability,
+        # so we use a different approximation (5.39)
+        # https://www.research-collection.ethz.ch/handle/20.500.11850/129873
+        mask = n <= self.epsilon
+        if torch.sum(mask).data[0] > 0:
+            q[mask] = torch.cat([n * 0.0 + 1, three_vector / 2], dim=1)
+
+        return q
+
     def logq(self, q):
+        # clamping to address https://github.com/pytorch/pytorch/issues/2421
+        q = torch.clamp(q, self.epsilon)
+
         n = torch.norm(q[:, 1:], p=2, dim=1, keepdim=True)
-        return (2 * torch.atan2(n, q[:, 0].unsqueeze(1))) * q[:, 1:] / n
+        three_vector = (2 * torch.atan2(n, q[:, 0:1])) * q[:, 1:] / n
 
-    def box_minus(self, a, b, safe=True):
-        result = self.logq(self.quaterion_mul(a, self.quaterion_unit_inverse(b)))
-        if safe:
-            result[result != result] = 0
+        # when norm(q) is close to zero it's numerically unstable, so we use 5.41 from
+        # https://www.research-collection.ethz.ch/handle/20.500.11850/129873
+        mask = n <= self.epsilon
+        if torch.sum(mask).data[0] > 0:
+            three_vector[mask] = torch.sign(q[:, 0:1]) * q[:, 1:]
 
-        return result
+        return three_vector
+
+    def box_minus(self, a, b):
+        return self.logq(self.quaterion_mul(a, self.quaterion_unit_inverse(b)))
 
     def encoder(self, in_channels, out_channels, kernel_size=(3, 3, 3), stride=(1, 1, 1), padding=(0, 0, 0), bias=True, batchnorm=False):
         if batchnorm:
@@ -93,13 +172,17 @@ class Net(nn.Module):
             layer = nn.Sequential(
                 nn.Conv3d(in_channels, out_channels, kernel_size, stride=stride, padding=padding, bias=bias),
                 nn.ReLU())
+
         return layer
 
     def preprocess(self, x):
-        return x.float() / 255.0
+        x = x.float() / 255.0
+        x = self.sobel_gradient(x)
+
+        return x
 
     def forward(self, x):
-        frames, xd, xdd, omegas, previous_state = x
+        dts, frames, xd, xdd, omegas, previous_state = x
 
         # normalize
         x = self.preprocess(frames)
@@ -130,25 +213,37 @@ class Net(nn.Module):
         delta_pos = self.h_pos(gap)
         delta_vel = self.h_vel(gap)
         rot = self.h_rot(gap)
-        rot /= torch.norm(rot, p=2, dim=1, keepdim=True)
+        rot = self.expq(rot)
+
+        # Extended Kalman Filter
+        pos_dot = self.quaternion_rot(delta_pos, self.quaterion_unit_inverse(rot))
+        vel_dot = self.quaternion_rot(self.gravity, self.quaterion_unit_inverse(rot)) + xdd[:, -1]
 
         previous_pos, previous_vel, previous_rot = previous_state[:, :3], previous_state[:, 3:6], previous_state[:, 6:]
-        measurement = (previous_pos + delta_pos, previous_vel + delta_vel, rot)
-        # TODO: do we want to predict the delta to the quaterion vector?
 
-        estimate = measurement
+        dt = dts[:, -1:]
+        pos_t = previous_pos + pos_dot * dt
+        vel_t = previous_vel + vel_dot * dt
+        quat_t = self.quaterion_mul(rot, self.expq(omegas[:, -1] * dt))  #TODO: rot boxplus omega * dt
 
-        P = Variable(torch.eye(9)).cuda()
+        estimate = (pos_t, vel_t, quat_t)
+
+        A = Variable(torch.eye(9), requires_grad=False).cuda().unsqueeze(0).repeat(batch, 1, 1)  # function of x
+        P = Variable(torch.eye(9), requires_grad=False).cuda().unsqueeze(0).repeat(batch, 1, 1)
+
+        P = A.bmm(P).bmm(A.transpose(1, 2)) + self.Q.diag()  # page 42.3
 
         return (estimate, P)
 
-    def loss(self, output, target):
+    def loss(self, output, target, input=None):
         t_pos, t_vel, t_rot = target[:, -1, :3], target[:, -1, 3:6], target[:, -1, 6:]
         (pos, vel, rot), P = output
 
         x_delta = torch.cat([pos - t_pos, vel - t_vel, self.box_minus(rot, t_rot)], dim=1).unsqueeze(2)
-        likelihood = torch.matmul(x_delta.transpose(1, 2), P).bmm(x_delta)
 
-        loss = torch.log(likelihood.mean())
+        likelihood = x_delta.transpose(1, 2).bmm(P).bmm(x_delta)
+
+        # TODO: this math is wrong until i can get the right formula for likelihood
+        loss = likelihood.abs().mean() + self.Q.abs().sum()
 
         return loss, {'loss': loss}
